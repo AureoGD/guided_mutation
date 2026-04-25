@@ -42,7 +42,7 @@ config = {
     # -----------------------------
     # Training
     # -----------------------------
-    "pop_size": 80,
+    "pop_size": 40,
     "species_size": 1,
     "num_scenarios": 5,
     "max_generations": 100,
@@ -59,8 +59,8 @@ config = {
     # -----------------------------
     # RL params
     # -----------------------------
-    "rl_steps": 200,
-    "batch_size": 128,
+    "rl_steps": 1000,
+    "batch_size": 256,
     "gamma": 0.99,
     "epsilon": 0.2,
 

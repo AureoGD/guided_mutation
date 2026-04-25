@@ -18,6 +18,8 @@ class BaseRefiner:
 
         env_spec = config["env_spec"]
 
+        self.n_action = self.config["env_spec"].act_dim
+
         v_spec = config["v_policy"]
 
         self.window_size = v_spec.get("window_size", 5)
@@ -53,6 +55,8 @@ class BaseRefiner:
         env, _ = self.env_fn()
         state, _ = env.reset(seed=scenario)
         trajectory_window = []
+        cumulative_reward = 0
+        e_window = []
         # ----------------------------------------
         # 3. INTERACTION LOOP
         # ----------------------------------------
@@ -60,10 +64,14 @@ class BaseRefiner:
         for step in range(self.max_steps):
 
             # ação definida pelo algoritmo filho
-            action = self.select_action(st)
+            a_taken, a_policy = self.select_action(st)
+
+            self.update_action_online(a_taken)
 
             # step no ambiente
-            next_state, reward, terminated, truncated, _ = env.step(action)
+            next_state, reward, terminated, truncated, _ = env.step(a_taken)
+
+            cumulative_reward += reward
 
             new_st = normalize_state(next_state)
 
@@ -72,40 +80,44 @@ class BaseRefiner:
             # ----------------------------------------
             # STORE TRANSITION (shared buffer)
             # ----------------------------------------
-            self.memory.add(st, action, reward, new_st, done)
+            self.memory.add(st, np.array([a_taken, a_policy]), reward, new_st, done)
 
             # ----------------------------------------
             # V NETWORK PREDICT
             # ----------------------------------------
-            current_step_data = np.concatenate([st, np.array([action])])
+            # current_step_data = np.concatenate([st, np.array([a_taken])])
 
-            self.trajectory_window.append(current_step_data)
-            self.reward_window.append(reward)
+            # self.trajectory_window.append(current_step_data)
+            # self.reward_window.append(reward)
 
-            if len(self.trajectory_window) == self.window_size:
-                window_np = np.array(self.trajectory_window)
+            # if len(self.trajectory_window) == self.window_size:
+            #     window_np = np.array(self.trajectory_window)
 
-                window_tensor = torch.FloatTensor(window_np).unsqueeze(0).to(self.v_network.device)
-                with torch.no_grad():
-                    self.v_network_value = self.v_network(window_tensor).item()
+            #     window_tensor = torch.FloatTensor(window_np).unsqueeze(0).to(self.v_network.device)
+            #     with torch.no_grad():
+            #         self.v_network_value = self.v_network(window_tensor).item()
 
-                # self.current_delta_reward = (self.reward_window[-1] - self.reward_window[0]) / (self.reward_window[0] +
-                #                                                                                 self.eps)
+            #     # self.current_delta_reward = (self.reward_window[-1] - self.reward_window[0]) / (self.reward_window[0] +
+            #     #                                                                                 self.eps)
 
-                diff_real = self.reward_window[-1] - self.reward_window[0]
-                self.current_delta_reward = np.sign(diff_real) * np.log1p(np.abs(diff_real))
+            #     diff_real = self.reward_window[-1] - self.reward_window[0]
+            #     self.current_delta_reward = np.sign(diff_real) * np.log1p(np.abs(diff_real))
+            #     e_window.append(self.current_delta_reward - self.v_network_value)
+            # # ----------------------------------------
+            # LEARNING STEP
             # ----------------------------------------
-            # LEARNING STEP (delegado)
-            # ----------------------------------------
-            self.train_step()
+            # self.train_step()
+
+            if done:
+                break
 
             # próximo estado
             st = new_st
-
         # ----------------------------------------
         # 4. RETURN UPDATED PARAMETERS
         # ----------------------------------------
-        return self.policy.get_parameters()
+        self.train_batch()
+        return self.policy.get_parameters(), cumulative_reward
 
     # ----------------------------------------
     # METHODS TO BE IMPLEMENTED BY CHILD
@@ -115,3 +127,9 @@ class BaseRefiner:
 
     def train_step(self):
         raise NotImplementedError
+
+    def update_action_online(self):
+        pass
+
+    def train_batch(self):
+        pass

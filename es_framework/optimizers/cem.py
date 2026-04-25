@@ -135,3 +135,6 @@ class CEMOptimizer(BaseOptimizer):
             "best_fitness": float(self.best_fitness),
             "mean_shift": float(np.linalg.norm(self.mean - self.old_mean))
         }
+
+    def replace_population(self, new_pop):
+        self.last_population = np.array(new_pop)

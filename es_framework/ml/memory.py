@@ -33,13 +33,11 @@ class ReplayBuffer:
         batch = [self.buffer[i] for i in indices]
 
         s, a, r, s_next, done = zip(*batch)
-        return (
-            np.array(s, dtype=np.float32),
-            np.array(a, dtype=np.int64),  # Ação é inteiro
-            np.array(r, dtype=np.float32),  # Reward como float32
-            np.array(s_next, dtype=np.float32),
-            np.array(done, dtype=np.float32)  # Done como float32 (útil para o cálculo do Bellman)
-        )
+        return (np.array(s, dtype=np.float32), np.array(a, dtype=np.int64), np.array(r, dtype=np.float32),
+                np.array(s_next, dtype=np.float32), np.array(done, dtype=np.float32))
+
+    def get_all(self):
+        return list(self.buffer)
 
     # ----------------------------------------
     def __len__(self):
