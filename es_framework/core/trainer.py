@@ -227,7 +227,7 @@ class Trainer:
             print("=" * 50)
 
             # ----------------------------------------
-            # SCENARIOS (GLOBAL por enquanto)
+            # SCENARIOS
             # ----------------------------------------
             scenarios = [self.scenario_generator.sample() for _ in range(self.num_scenarios)]
 
@@ -422,13 +422,13 @@ class Trainer:
                 best_params_sp = pop[best_idx]
                 best_fit_sp = fitness[best_idx]
 
-                # BEST da espécie
+                # BEST of the specie
                 self.checkpoint.save_best(params=best_params_sp, fitness=best_fit_sp, specie=species.id)
 
-                # LAST da espécie
+                # LAST of specie
                 self.checkpoint.save_last(params=best_params_sp, specie=species.id)
 
-                # PERIODIC da espécie
+                # PERIODIC save for specie
                 self.checkpoint.save_periodic(params=best_params_sp,
                                               generation=gen,
                                               interval=self.config.get("checkpoint_freq", 10),
