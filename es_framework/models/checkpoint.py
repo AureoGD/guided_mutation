@@ -44,46 +44,63 @@ class ModelCheckpoint:
         print("[CHECKPOINT] Model spec saved")
 
     # ----------------------------------------
-    def update(self, optimizer, generation):
+    def save_best(self, params, fitness, specie=None):
+        """
+        Salva o melhor indivíduo (global ou por espécie)
+        """
 
-        best = optimizer.get_best_params()
+        if specie is None:
+            # -----------------------------
+            # GLOBAL
+            # -----------------------------
+            if fitness > self.best_fitness:
 
-        if best is None:
-            return
+                self.best_fitness = fitness
 
-        best_params = best["params"]
-        best_fitness = best["fitness"]
+                path = self.model_dir / "best_params.npy"
+                np.save(path, params)
 
-        if best_fitness > self.best_fitness:
+                print(f"[CHECKPOINT] New GLOBAL best | Fitness: {fitness:.4f}")
 
-            self.best_fitness = best_fitness
+        else:
+            # -----------------------------
+            # POR ESPÉCIE
+            # -----------------------------
+            if not hasattr(self, "best_fitness_species"):
+                self.best_fitness_species = {}
 
-            path = self.model_dir / "best_params.npy"
-            np.save(path, best_params)
+            prev_best = self.best_fitness_species.get(specie, -np.inf)
 
-            print(f"[CHECKPOINT] New best | Fitness: {best_fitness:.4f}")
+            if fitness > prev_best:
+
+                self.best_fitness_species[specie] = fitness
+
+                path = self.model_dir / f"best_params_sp_{specie}.npy"
+                np.save(path, params)
+
+                print(f"[CHECKPOINT] New BEST | Species {specie} | Fitness: {fitness:.4f}")
+
+    def save_last(self, params, specie=None):
+        """
+        Salva o último indivíduo (global ou por espécie)
+        """
+
+        if specie is None:
+            path = self.model_dir / "last_params.npy"
+        else:
+            path = self.model_dir / f"last_params_sp_{specie}.npy"
+
+        np.save(path, params)
 
     # ----------------------------------------
-    def save_last(self, optimizer):
-
-        best = optimizer.get_best_params()
-
-        if best is None:
-            return
-
-        path = self.model_dir / "last_params.npy"
-        np.save(path, best["params"])
-
-    # ----------------------------------------
-    def save_periodic(self, optimizer, generation, interval=50):
+    def save_periodic(self, params, generation, interval=50, specie=None):
 
         if generation % interval != 0:
             return
 
-        best = optimizer.get_best_params()
+        if specie is None:
+            path = self.ckpt_dir / f"gen_{generation:05d}.npy"
+        else:
+            path = self.ckpt_dir / f"spe_{specie}_gen_{generation:05d}.npy"
 
-        if best is None:
-            return
-
-        path = self.ckpt_dir / f"gen_{generation:05d}.npy"
-        np.save(path, best["params"])
+        np.save(path, params)

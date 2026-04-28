@@ -37,7 +37,20 @@ class DQNRefiner(BaseRefiner):
                                            n_task=n_cenarios,
                                            n_steps=self.max_steps,
                                            n_actions=self.n_action)
+
         self.local_density.attribute_id(ind_id=0)
+
+        self.train_metrics = {
+            "loss_dqn": 0.0,
+            "loss_rank": 0.0,
+            "td_error": 0.0,
+            "exploration_ratio": 0.0,
+            "better_ratio": 0.0,
+            "mean_advantage": 0.0,
+            "q_mean": 0.0,
+            "q_std": 0.0,
+            "n_batches": 0
+        }
 
     def sync_with_elite(self, elite_params):
 
@@ -138,12 +151,27 @@ class DQNRefiner(BaseRefiner):
         if len(self.memory) < self.batch_size:
             return
 
+        # ----------------------------------------
+        # Reset métricas
+        # ----------------------------------------
+        self.train_metrics = {
+            "loss_dqn": 0.0,
+            "loss_rank": 0.0,
+            "td_error": 0.0,
+            "exploration_ratio": 0.0,
+            "better_ratio": 0.0,
+            "mean_advantage": 0.0,
+            "q_mean": 0.0,
+            "q_std": 0.0,
+            "n_batches": 0
+        }
+
         all_s, all_a, all_r, all_sn, all_d = self.memory.sample(len(self.memory))
 
         dataset_size = len(all_s)
         indices = np.arange(dataset_size)
 
-        lambda_rank = 0.1  # peso da loss de comparação (ajustável)
+        lambda_rank = 0.1  # ajuste conforme necessário
 
         for epoch in range(epochs):
 
@@ -167,49 +195,83 @@ class DQNRefiner(BaseRefiner):
                 done = torch.FloatTensor(all_d[batch_indices]).to(self.device)
 
                 # ----------------------------------------
-                # Q(s,a_taken)
+                # Forward
                 # ----------------------------------------
                 q_values = self.q_online(s)
                 q_taken = q_values.gather(1, a_taken).squeeze()
+                q_policy = q_values.gather(1, a_policy).squeeze()
 
                 # ----------------------------------------
-                # Target Bellman
+                # Target
                 # ----------------------------------------
                 with torch.no_grad():
                     q_next_max = self.q_target(s_next).max(1)[0]
                     target = r + self.gamma * q_next_max * (1 - done)
 
+                # ----------------------------------------
+                # Loss DQN
+                # ----------------------------------------
                 loss_dqn = self.criterion(q_taken, target)
 
                 # ----------------------------------------
-                # Ranking loss (SÓ quando houve exploração)
+                # Ranking loss (opcional)
                 # ----------------------------------------
-                q_policy = q_values.gather(1, a_policy).squeeze()
-
-                # máscara: só quando ações são diferentes
                 mask = (a_taken.squeeze() != a_policy.squeeze()).float()
-
-                # comparação usando target (mais estável)
                 rank_term = torch.relu(q_policy - target)
 
-                # aplica máscara
                 if mask.sum() > 0:
                     loss_rank = (rank_term * mask).sum() / mask.sum()
                 else:
                     loss_rank = torch.tensor(0.0, device=self.device)
 
-                # ----------------------------------------
-                # Loss final
-                # ----------------------------------------
-                # loss = loss_dqn + lambda_rank * loss_rank
-                loss = loss_dqn
+                loss = loss_dqn + lambda_rank * loss_rank
 
                 # ----------------------------------------
-                # Otimização
+                # Backprop
                 # ----------------------------------------
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
+
+                # ----------------------------------------
+                #  MÉTRICAS (SEM GRADIENTE)
+                # ----------------------------------------
+                with torch.no_grad():
+
+                    td_error = torch.abs(q_taken - target).mean().item()
+
+                    exploration_mask = (a_taken.squeeze() != a_policy.squeeze()).float()
+                    exploration_ratio = exploration_mask.mean().item()
+
+                    better_mask = (target > q_policy).float()
+                    better_ratio = better_mask.mean().item()
+
+                    advantage = (target - q_policy).mean().item()
+
+                    q_mean = q_values.mean().item()
+                    q_std = q_values.std().item()
+
+                # ----------------------------------------
+                # Acumular métricas
+                # ----------------------------------------
+                self.train_metrics["loss_dqn"] += loss_dqn.item()
+                self.train_metrics["loss_rank"] += loss_rank.item()
+                self.train_metrics["td_error"] += td_error
+                self.train_metrics["exploration_ratio"] += exploration_ratio
+                self.train_metrics["better_ratio"] += better_ratio
+                self.train_metrics["mean_advantage"] += advantage
+                self.train_metrics["q_mean"] += q_mean
+                self.train_metrics["q_std"] += q_std
+                self.train_metrics["n_batches"] += 1
+
+        # ----------------------------------------
+        # Normalização das métricas
+        # ----------------------------------------
+        if self.train_metrics["n_batches"] > 0:
+            n = self.train_metrics["n_batches"]
+            for k in self.train_metrics:
+                if k != "n_batches":
+                    self.train_metrics[k] /= n
 
         # ----------------------------------------
         # Sync target network

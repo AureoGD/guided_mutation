@@ -14,16 +14,18 @@ except ImportError:
 
 class TrainingLogger:
 
-    def __init__(self, run_dir: str):
-        """
-        Args:
-            run_dir: diretório da run (definido pelo Trainer)
-        """
+    def __init__(self, run_dir: str, num_species: int = 1, top_k_species: int = 3):
 
         self.run_dir = Path(run_dir)
 
         # -----------------------------
-        # Create directories
+        # Species config
+        # -----------------------------
+        self.num_species = num_species
+        self.top_k_species = top_k_species
+
+        # -----------------------------
+        # Directories
         # -----------------------------
         self.log_dir = self.run_dir / "logs"
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -32,7 +34,7 @@ class TrainingLogger:
         self.tb_dir.mkdir(parents=True, exist_ok=True)
 
         # -----------------------------
-        # Time tracking
+        # Timing
         # -----------------------------
         self.start_time = time.time()
         self.last_gen_time = self.start_time
@@ -61,7 +63,7 @@ class TrainingLogger:
         fitness: np.ndarray,
         population: Optional[np.ndarray],
         optimizer_metrics: Dict[str, float],
-        extra_metrics: Optional[Dict[str, float]] = None,
+        extra_metrics: Optional[Dict[str, Any]] = None,
     ):
 
         now = time.time()
@@ -71,7 +73,7 @@ class TrainingLogger:
         self.last_gen_time = now
 
         # ----------------------------------------
-        # FITNESS STATS
+        # GLOBAL FITNESS
         # ----------------------------------------
         stats = {
             "generation": generation,
@@ -107,48 +109,61 @@ class TrainingLogger:
         # ----------------------------------------
         # EXTRA METRICS
         # ----------------------------------------
+        species_metrics = None
+
         if extra_metrics:
-            stats.update(extra_metrics)
+
+            # separa global vs species
+            if "species" in extra_metrics:
+                species_metrics = extra_metrics["species"]
+
+            if "global" in extra_metrics:
+                stats.update(extra_metrics["global"])
+            else:
+                stats.update(extra_metrics)
 
         # ----------------------------------------
-        # SAVE JSONL
+        # SAVE JSON
         # ----------------------------------------
         with open(self.log_path, "a") as f:
             f.write(json.dumps(stats) + "\n")
 
         # ----------------------------------------
-        # TENSORBOARD
+        # TENSORBOARD (GLOBAL)
         # ----------------------------------------
         if self.tb_writer:
-            for k, v in stats.items():
-                try:
-                    val = float(v)
+            for key, value in stats.items():
+                self._log_value(key, value, generation)
 
-                    if "fitness" in k:
-                        tag = f"Fitness/{k.replace('fitness_', '')}"
+        # ----------------------------------------
+        # TENSORBOARD (SPECIES)
+        # ----------------------------------------
+        if self.tb_writer and species_metrics and self.num_species > 1:
 
-                    elif k == "param_std":
-                        tag = "Population/std"
+            # ordena espécies por fitness médio
+            species_sorted = sorted(species_metrics.items(), key=lambda x: x[1].get("fitness_mean", -1e9), reverse=True)
 
-                    elif "sigma" in k or "step" in k:
-                        tag = f"Optimizer/{k}"
+            top_species = species_sorted[:self.top_k_species]
 
-                    elif "time" in k or "duration" in k:
-                        tag = f"Timing/{k}"
+            for sp_id, metrics in top_species:
 
-                    elif "num_" in k:
-                        tag = f"System/{k}"
+                for key, value in metrics.items():
 
-                    elif k in ["difficulty", "success_rate", "max_stage_reached"]:
-                        tag = f"Curriculum/{k}"
+                    tag = f"Species/{sp_id}/{self._format_tag(key)}"
 
-                    else:
-                        tag = f"Metrics/{k}"
+                    if isinstance(value, (int, float)):
+                        self.tb_writer.add_scalar(tag, float(value), generation)
 
-                    self.tb_writer.add_scalar(tag, val, generation)
+                    elif isinstance(value, dict) and "mean" in value:
+                        mean = float(value["mean"])
+                        std = float(value.get("std", 0.0))
 
-                except (TypeError, ValueError):
-                    continue
+                        self.tb_writer.add_scalar(f"{tag}/mean", mean, generation)
+
+                        if std > 1e-8:
+                            self.tb_writer.add_scalar(f"{tag}/std", std, generation)
+                            self.tb_writer.add_scalar(f"{tag}/mean+std", mean + std, generation)
+                            self.tb_writer.add_scalar(f"{tag}/mean-std", mean - std, generation)
 
         # ----------------------------------------
         # CONSOLE
@@ -160,7 +175,68 @@ class TrainingLogger:
               f"Time: {duration:.2f}s")
 
     # ----------------------------------------
+    def _log_value(self, key, value, generation):
+
+        try:
+            if isinstance(value, (int, float)):
+                tag = self._format_tag(key)
+                self.tb_writer.add_scalar(tag, float(value), generation)
+
+            elif isinstance(value, dict) and "mean" in value:
+                mean = float(value["mean"])
+                std = float(value.get("std", 0.0))
+
+                base_tag = self._format_tag(key)
+
+                self.tb_writer.add_scalar(f"{base_tag}/mean", mean, generation)
+
+                if std > 1e-8:
+                    self.tb_writer.add_scalar(f"{base_tag}/std", std, generation)
+                    self.tb_writer.add_scalar(f"{base_tag}/mean+std", mean + std, generation)
+                    self.tb_writer.add_scalar(f"{base_tag}/mean-std", mean - std, generation)
+
+        except Exception:
+            pass
+
+    # ----------------------------------------
+    def _format_tag(self, key: str) -> str:
+
+        if key.startswith("fitness_"):
+            return f"Fitness/{key.replace('fitness_', '')}"
+
+        elif key == "param_std":
+            return "Population/std"
+
+        elif "loss" in key or "td_error" in key:
+            return f"RL/{key}"
+
+        elif "q_" in key:
+            return f"RL/{key}"
+
+        elif "exploration" in key or "better_ratio" in key:
+            return f"Exploration/{key}"
+
+        elif "advantage" in key:
+            return f"RL/{key}"
+
+        elif "replace" in key or "elite_from" in key or "guided" in key:
+            return f"GuidedMutation/{key}"
+
+        elif "success" in key:
+            return f"Task/{key}"
+
+        elif "time" in key or "duration" in key:
+            return f"Timing/{key}"
+
+        elif "sigma" in key or "step" in key:
+            return f"CEM/{key}"
+
+        else:
+            return f"Metrics/{key}"
+
+    # ----------------------------------------
     def close(self):
+
         if self.tb_writer:
             self.tb_writer.close()
 

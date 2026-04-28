@@ -13,7 +13,18 @@ class CEMOptimizer(BaseOptimizer):
         # -----------------------------
         # Init distribution
         # -----------------------------
-        self.mean = np.zeros(self.param_dim, dtype=np.float32)
+        seed = config.get("species_seed", None)
+        spread = config.get("species_init_spread", 1.0)
+
+        # RNG da espécie (persistente)
+        if seed is not None:
+            self.rng = np.random.RandomState(seed)
+        else:
+            self.rng = np.random.RandomState()
+
+        # mean inicial
+        self.mean = self.rng.uniform(-spread, spread, size=self.param_dim).astype(np.float32)
+
         self.elites = np.zeros(self.param_dim, dtype=np.float32)
         elite_fraction = config.get('elite_frac', 0.2)
         initial_std_dev = config.get('sigma_init', 0.1)
@@ -48,7 +59,7 @@ class CEMOptimizer(BaseOptimizer):
         if self.update_rule_type == "cmaes_type":
             self.old_mean = np.copy(self.mean)
 
-        noise = np.random.randn(self.population_size, self.param_dim).astype(np.float32)
+        noise = self.rng.randn(self.population_size, self.param_dim).astype(np.float32)
         population = self.mean + (self.std_devs * noise)
 
         self.last_population = population

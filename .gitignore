@@ -2,3 +2,5 @@
 .vscode
 __pycache__/
 *.pyc
+infos.txt
+experiments

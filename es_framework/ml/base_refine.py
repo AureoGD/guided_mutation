@@ -69,7 +69,7 @@ class BaseRefiner:
             self.update_action_online(a_taken)
 
             # step no ambiente
-            next_state, reward, terminated, truncated, _ = env.step(a_taken)
+            next_state, reward, terminated, truncated, info = env.step(a_taken)
 
             cumulative_reward += reward
 
@@ -85,24 +85,8 @@ class BaseRefiner:
             # ----------------------------------------
             # V NETWORK PREDICT
             # ----------------------------------------
-            # current_step_data = np.concatenate([st, np.array([a_taken])])
+            self.predcit_delta_reward()
 
-            # self.trajectory_window.append(current_step_data)
-            # self.reward_window.append(reward)
-
-            # if len(self.trajectory_window) == self.window_size:
-            #     window_np = np.array(self.trajectory_window)
-
-            #     window_tensor = torch.FloatTensor(window_np).unsqueeze(0).to(self.v_network.device)
-            #     with torch.no_grad():
-            #         self.v_network_value = self.v_network(window_tensor).item()
-
-            #     # self.current_delta_reward = (self.reward_window[-1] - self.reward_window[0]) / (self.reward_window[0] +
-            #     #                                                                                 self.eps)
-
-            #     diff_real = self.reward_window[-1] - self.reward_window[0]
-            #     self.current_delta_reward = np.sign(diff_real) * np.log1p(np.abs(diff_real))
-            #     e_window.append(self.current_delta_reward - self.v_network_value)
             # # ----------------------------------------
             # LEARNING STEP
             # ----------------------------------------
@@ -111,13 +95,16 @@ class BaseRefiner:
             if done:
                 break
 
-            # próximo estado
+            # proximo estado
             st = new_st
         # ----------------------------------------
         # 4. RETURN UPDATED PARAMETERS
         # ----------------------------------------
+
         self.train_batch()
-        return self.policy.get_parameters(), cumulative_reward
+        # sucess_flag = float(info["sucess_flag"])
+        sucess_flag = 0
+        return self.policy.get_parameters(), cumulative_reward, sucess_flag
 
     # ----------------------------------------
     # METHODS TO BE IMPLEMENTED BY CHILD
@@ -132,4 +119,26 @@ class BaseRefiner:
         pass
 
     def train_batch(self):
+        pass
+
+    def predcit_delta_reward(self):
+        # uncertainty-driven exploration
+        # current_step_data = np.concatenate([st, np.array([a_taken])])
+
+        # self.trajectory_window.append(current_step_data)
+        # self.reward_window.append(reward)
+
+        # if len(self.trajectory_window) == self.window_size:
+        #     window_np = np.array(self.trajectory_window)
+
+        #     window_tensor = torch.FloatTensor(window_np).unsqueeze(0).to(self.v_network.device)
+        #     with torch.no_grad():
+        #         self.v_network_value = self.v_network(window_tensor).item()
+
+        #     # self.current_delta_reward = (self.reward_window[-1] - self.reward_window[0]) / (self.reward_window[0] +
+        #     #                                                                                 self.eps)
+
+        #     diff_real = self.reward_window[-1] - self.reward_window[0]
+        #     self.current_delta_reward = np.sign(diff_real) * np.log1p(np.abs(diff_real))
+        #     e_window.append(self.current_delta_reward - self.v_network_value)
         pass

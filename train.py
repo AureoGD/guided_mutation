@@ -27,6 +27,7 @@ import multiprocessing as mp
 from es_framework.core.trainer import Trainer
 from es_framework.models.policy import Policy
 from env.simple_env import create_env
+from env.env_scenario import TaskScenario
 
 # ----------------------------------------
 # CONFIG
@@ -43,7 +44,7 @@ config = {
     # Training
     # -----------------------------
     "pop_size": 40,
-    "species_size": 1,
+    "species_size": 2,
     "num_scenarios": 5,
     "max_generations": 100,
     "max_workers": 10,
@@ -95,6 +96,8 @@ config = {
     "env_config": None,
     "scenario_generator_class": None,
 }
+
+config["scenario_generator_class"] = TaskScenario
 
 # ----------------------------------------
 # MAIN

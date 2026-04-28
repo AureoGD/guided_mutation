@@ -12,13 +12,13 @@ def step_env(env, action):
     out = env.step(action)
 
     if len(out) == 5:
-        next_state, reward, terminated, truncated, _ = out
+        next_state, reward, terminated, truncated, info = out
         done = terminated or truncated
 
     else:
-        next_state, reward, done, _ = out
+        next_state, reward, done, info = out
 
-    return next_state, reward, done
+    return next_state, reward, done, info
 
 
 def reset_env(env, scenario):
@@ -42,7 +42,7 @@ def worker_loop(worker_id, task_queue, result_queue, config, start_event):
         if task is None:
             break
 
-        task_id, ind_id, params, scenario_data, flag, extra, memory = task
+        task_id, species_id, ind_id, params, scenario_data, flag, extra, memory = task
 
         if flag == FLAG_SIMULATE:
             policy.set_parameters(params)
@@ -53,7 +53,7 @@ def worker_loop(worker_id, task_queue, result_queue, config, start_event):
 
             for step in range(config.get("max_steps", 1000)):
                 action, _ = policy.predict(st)
-                next_state, reward, done = step_env(env, action)
+                next_state, reward, done, info = step_env(env, action)
                 st_new = normalize_state(next_state)
                 trajectory.append((st, action, reward, st_new))
                 total_reward += reward
@@ -61,14 +61,18 @@ def worker_loop(worker_id, task_queue, result_queue, config, start_event):
                 if done:
                     break
 
-            result_queue.put((task_id, ind_id, np.float32(total_reward), 0, trajectory))
+            # sucess_flag = float(info["sucess_flag"])
+            sucess_flag = 0
+
+            result_queue.put((task_id, species_id, ind_id, np.float32(total_reward), sucess_flag, trajectory))
 
         elif flag == FLAG_REFINE:
             if refiner is None:
                 n_cenarios = len(scenario_data)
                 local_mem = ReplayBuffer(capacity=config.get("rl_steps", 200))
                 refiner = DQNRefiner(env_fn, policy, local_mem, n_cenarios, config)
-                refiner.add_memory(memory)
+
+            refiner.add_memory(memory)
 
             if "trained_v_model" in config:
                 refiner.v_network.load_state_dict(config["trained_v_model"])
@@ -76,18 +80,22 @@ def worker_loop(worker_id, task_queue, result_queue, config, start_event):
             refiner.sync_with_elite(params)
             refiner.set_initial_history(extra)
             cumulative_reward = 0
+            sucess_info_list = []
             for scenario in scenario_data:
-                params, reward = refiner.refine(params, scenario["seed"])
+                params, reward, sucess_flag = refiner.refine(params, scenario["seed"])
+                sucess_info_list.append(sucess_flag)
                 cumulative_reward += reward
 
             meam_reward = cumulative_reward / len(scenario_data)
 
             result_queue.put({
                 "type": "refined_result",
+                "species_id": species_id,
                 "ind_id": ind_id,
                 "refined_params": params,
                 "mean_reward": meam_reward,
-                "memory_chunk": refiner.memory.get_all()
+                "memory_chunk": refiner.memory.get_all(),
+                "train_metrics": refiner.train_metrics
             })
 
             # refiner.memory.buffer.clear()
