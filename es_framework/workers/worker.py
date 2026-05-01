@@ -1,101 +1,199 @@
+import time
+import threading
 import numpy as np
-from es_framework.models.policy import Policy
-from env.norm_state import normalize_state
-from es_framework.ml.dqn_refiner import DQNRefiner
-from es_framework.ml.memory import ReplayBuffer
+from guided_mutation.es_framework.models.policy import Policy
+from guided_mutation.es_framework.ml.guided_qv import GuidedQV
+from guided_mutation.es_framework.ml.memory import ReplayBuffer
 
 FLAG_SIMULATE = 0
 FLAG_REFINE = 1
 
 
-def step_env(env, action):
-    out = env.step(action)
+def _step_env(env, action):
+    next_state, reward, terminated, truncated, info = env.step(action)
+    done = terminated or truncated
 
-    if len(out) == 5:
-        next_state, reward, terminated, truncated, info = out
-        done = terminated or truncated
-
-    else:
-        next_state, reward, done, info = out
-
-    return next_state, reward, done, info
+    return reward, next_state, done, info
 
 
-def reset_env(env, scenario):
-    out, _ = env.reset(seed=scenario)
+def _unpack_scenarios_data(scenario_data):
+    seed = scenario_data.get("seed", 44)
+    reset_options = scenario_data.get("config", None)
+    return seed, reset_options
 
-    return out
+
+def _heartbeat_fn(heartbeat, stop_event, interval=2.0):
+    while not stop_event.is_set():
+        heartbeat[0] = time.time()
+        stop_event.wait(interval)
 
 
-def worker_loop(worker_id, task_queue, result_queue, config, start_event):
-    print(f"[Worker {worker_id}] Starting...")
+def _unpac_info_for_hb(heartbeat, info):
+    heartbeat[1] = info["sim_step"]
+    heartbeat[2] = info["env_id"]
+
+
+def worker_loop(worker_id, task_queue, result_queue, config, heartbeat, start_event):
+
+    env_config = config["env_config"]
     env_fn = config["env_fn"]
-    env, _ = env_fn()
+    env, _ = env_fn(env_config, worker_id)
     policy = Policy(config["env_spec"], config["model_config"])
+    success_fcn = config.get("success_criterion", None)
+    max_sim_step = config.get("max_steps", 1000)
 
-    refiner = None
+    # reset env for test
+    try:
+        _, info = env.reset()
+        print(f"Env {worker_id} successfully created")
+    except Exception as e:
+        print(f"[Worker {worker_id}] Failed to create env: {type(e).__name__}: {e}")
 
+    gm = None
+
+    # Start event
     start_event.wait()
 
+    # Heart-beat inicialization:
+    stop_hb = threading.Event()
+    hb_thread = threading.Thread(target=_heartbeat_fn, args=(heartbeat, stop_hb), daemon=True)
+    hb_thread.start()
+
     while True:
+
         task = task_queue.get()
+
         if task is None:
+            stop_hb.set()
             break
 
-        task_id, species_id, ind_id, params, scenario_data, flag, extra, memory = task
+        task_id = task["task_id"]
+        species_id = task["species_id"]
+        ind_id = task["ind_id"]
+        params = task["params"]
+        scenario_data = task["scenario_data"]
+        flag = task["flag"]
+        extra_in = task["extra"]
 
-        if flag == FLAG_SIMULATE:
-            policy.set_parameters(params)
-            state = reset_env(env, scenario_data["seed"])
-            st = normalize_state(state)
-            trajectory = []
-            total_reward = 0.0
+        # --------------------------------------------------------
+        # FLAG_SIMULATE
+        # --------------------------------------------------------
 
-            for step in range(config.get("max_steps", 1000)):
-                action, _ = policy.predict(st)
-                next_state, reward, done, info = step_env(env, action)
-                st_new = normalize_state(next_state)
-                trajectory.append((st, action, reward, st_new))
-                total_reward += reward
-                st = st_new
-                if done:
-                    break
+        total_reward = 0.0
+        success_percent = 0.0
 
-            # sucess_flag = float(info["sucess_flag"])
-            sucess_flag = 0
+        try:
 
-            result_queue.put((task_id, species_id, ind_id, np.float32(total_reward), sucess_flag, trajectory))
+            if flag == FLAG_SIMULATE:
+                # set policy weights
+                policy.set_parameters(params)
 
-        elif flag == FLAG_REFINE:
-            if refiner is None:
-                n_cenarios = len(scenario_data)
-                local_mem = ReplayBuffer(capacity=config.get("rl_steps", 200))
-                refiner = DQNRefiner(env_fn, policy, local_mem, n_cenarios, config)
+                # get scenario info and reset
+                seed, reset_options = _unpack_scenarios_data(scenario_data)
 
-            refiner.add_memory(memory)
+                state, _ = env.reset(seed=seed, options=reset_options)
 
-            if "trained_v_model" in config:
-                refiner.v_network.load_state_dict(config["trained_v_model"])
+                trajectory = []
 
-            refiner.sync_with_elite(params)
-            refiner.set_initial_history(extra)
-            cumulative_reward = 0
-            sucess_info_list = []
-            for scenario in scenario_data:
-                params, reward, sucess_flag = refiner.refine(params, scenario["seed"])
-                sucess_info_list.append(sucess_flag)
-                cumulative_reward += reward
+                for step in range(max_sim_step):
+                    action, _ = policy.predict(state)
+                    reward, next_state, done, info = _step_env(env, action)
+                    trajectory.append((state, action, reward, next_state))
+                    total_reward += reward
 
-            meam_reward = cumulative_reward / len(scenario_data)
+                    if step % 10 == 0:
+                        _unpac_info_for_hb(heartbeat, info)
+
+                    if done:
+                        break
+                    state = next_state
+
+                if success_fcn is not None:
+                    success_percent = success_fcn(info=info, reward=total_reward)
+
+                extra_out = {"trajectory": trajectory}
+
+            # --------------------------------------------------------
+            # FLAG_REFINE
+            # --------------------------------------------------------
+            elif flag == FLAG_REFINE:
+                if gm is None:
+                    n_scenarios = len(scenario_data)
+                    local_mem = ReplayBuffer(capacity=config.get("rl_steps", 200))
+                    gm = GuidedQV(policy, local_mem, n_scenarios)
+
+                elite_mem = extra_in["memory"]
+                elite_act_density = extra_in["act_density"]
+                st_bt_flag = extra_in["st_bt"]
+
+                gm.add_batch(elite_mem)
+                gm.set_initial_history(elite_act_density)
+                gm.sync_with_elite(params)
+
+                success_list = []
+
+                for scenario in scenario_data:
+
+                    seed, reset_options = _unpack_scenarios_data(scenario)
+                    state, _ = env.reset(seed=seed, options=reset_options)
+
+                    for step in range(max_sim_step):
+
+                        action = gm.select_action(state)
+
+                        gm.update_act_density(action[0])
+
+                        reward, next_state, done, info = _step_env(env, action[0])
+                        mem = [state, action, reward, next_state, done]
+                        gm.add_transition(mem)
+
+                        total_reward += reward
+
+                        if step % 10 == 0:
+                            _unpac_info_for_hb(heartbeat, info)
+
+                        if st_bt_flag:
+                            gm.train_step()
+
+                        if done:
+                            break
+
+                        state = next_state
+
+                    if not st_bt_flag:
+                        gm.train_batch()
+
+                    if success_fcn is not None:
+                        success_list.append(success_fcn(info=info, reward=total_reward))
+
+                success_percent = np.sum(success_list) / n_scenarios
+                total_reward = total_reward / n_scenarios
+
+                extra_out = {
+                    "refined_params": gm.get_parameters(),
+                    "train_metrics": gm.train_metrics,
+                }
 
             result_queue.put({
-                "type": "refined_result",
+                "type": "simulation_result" if flag == FLAG_SIMULATE else "refined_result",
+                "task_id": task_id,
                 "species_id": species_id,
                 "ind_id": ind_id,
-                "refined_params": params,
-                "mean_reward": meam_reward,
-                "memory_chunk": refiner.memory.get_all(),
-                "train_metrics": refiner.train_metrics
+                "reward": np.float32(total_reward),
+                "success_percent": success_percent,
+                "status": "success",
+                "extra": extra_out
             })
 
-            # refiner.memory.buffer.clear()
+        except Exception as e:
+            print(f"[Worker {worker_id}] Task {task_id} failed: {type(e).__name__}: {e}")
+            result_queue.put({
+                "type": "simulation_result" if flag == FLAG_SIMULATE else "refined_result",
+                "task_id": task_id,
+                "species_id": species_id,
+                "ind_id": ind_id,
+                "reward": np.float32(-1e4),
+                "success_percent": 0.0,
+                "status": "error",
+                "extra": {}
+            })

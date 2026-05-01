@@ -9,16 +9,16 @@ from tqdm import tqdm
 from datetime import datetime
 from pathlib import Path
 
-from es_framework.workers.worker_manager import WorkerManager
-from es_framework.ml.memory import ReplayBuffer
-from es_framework.ml.value_policy.value_function import ValueFunction
-from es_framework.models.policy import Policy
-from es_framework.models.checkpoint import ModelCheckpoint
-from es_framework.logging.logger import TrainingLogger
+from guided_mutation.es_framework.workers.worker_manager import WorkerManager
+from guided_mutation.es_framework.ml.memory import ReplayBuffer
+from guided_mutation.es_framework.ml.value_policy.value_function import ValueFunction
+from guided_mutation.es_framework.models.policy import Policy
+from guided_mutation.es_framework.models.checkpoint import ModelCheckpoint
+from guided_mutation.es_framework.logging.logger import TrainingLogger
 
-from es_framework.ml.action_density import ActionDensity
-from es_framework.core.species import Species
-from es_framework.core.curriculum import CurriculumManager
+from guided_mutation.es_framework.ml.action_density import ActionDensity
+from guided_mutation.es_framework.core.species import Species
+from guided_mutation.es_framework.core.curriculum import CurriculumManager
 import copy
 
 
@@ -54,6 +54,8 @@ FLAG_REFINE = 1
 class Trainer:
 
     def __init__(self, config):
+
+        print(mp.get_start_method())
 
         self.config = config
 
@@ -150,11 +152,11 @@ class Trainer:
     def _build_optimizer(self, config):
 
         if config["optimizer_type"] == "CEM":
-            from es_framework.optimizers.cem import CEMOptimizer
+            from guided_mutation.es_framework.optimizers.cem import CEMOptimizer
             return CEMOptimizer(config)
 
         elif config["optimizer_type"] == "CMAES":
-            from es_framework.optimizers.cma_es import CMAESOptimizer
+            from guided_mutation.es_framework.optimizers.cma_es import CMAESOptimizer
             return CMAESOptimizer(config)
 
         else:
@@ -162,20 +164,24 @@ class Trainer:
 
     # ----------------------------------------
     def _compute_success_ratio(self, results):
-        successes = [success for _, _, _, _, success, _ in results]
+        successes = []
+        for result in results:
+            successes.append(result["success_flag"])
+
         return np.mean(successes)
 
     # ----------------------------------------
     def _aggregate_fitness(self, results):
 
         fitness_dict = {}
-
-        for _, _, ind_id, reward, _, _ in results:
+        for result in results:
+            ind_id = result["ind_id"]
+            ind_reward = result["reward"]
             if ind_id not in fitness_dict:
                 fitness_dict[ind_id] = []
-            fitness_dict[ind_id].append(reward)
+            fitness_dict[ind_id].append(ind_reward)
 
-        fitness = np.array([np.mean(fitness_dict.get(i, [-1e5])) for i in range(self.pop_size)])
+        fitness = np.array([np.mean(fitness_dict.get(i, [-1e4])) for i in range(self.pop_size)])
 
         return fitness
 
@@ -214,7 +220,6 @@ class Trainer:
         # ----------------------------------------
         self.worker_manager = WorkerManager(num_workers=self.max_workers, config=self.config)
         time.sleep(2)
-
         # ----------------------------------------
         # MAIN LOOP
         # ----------------------------------------
@@ -253,7 +258,7 @@ class Trainer:
             for result in tqdm(self.worker_manager.collect(len(tasks)),
                                total=len(tasks),
                                desc="Evaluating population in C".ljust(35),
-                               leave=False):
+                               leave=True):
                 results.append(result)
 
             # ----------------------------------------
@@ -261,9 +266,8 @@ class Trainer:
             # ----------------------------------------
             results_by_species = {sp.id: [] for sp in self.species_list}
 
-            for result in results:
-                _, sp_id, ind_id, reward, success, trajectory = result
-                results_by_species[sp_id].append(result)
+            for r in results:
+                results_by_species[r["species_id"]].append(r)
 
             # ----------------------------------------
             # PROCESS EACH SPECIES
@@ -271,6 +275,12 @@ class Trainer:
             species_metrics = {}
             all_fitness = []
             success_all = []
+
+            # ----------------------------------------
+            # SCENARIOS C'
+            # ----------------------------------------
+            new_scenarios = [self.scenario_generator.sample() for _ in range(self.num_scenarios)]
+            all_scenarios = scenarios + new_scenarios
 
             for species in self.species_list:
 
@@ -296,119 +306,121 @@ class Trainer:
                 # -------------------------
                 elite, elite_fitness, elite_idx = self._select_elite(species.population, fitness)
 
-                # ----------------------------------------
-                # SCENARIOS C'
-                # ----------------------------------------
-                new_scenarios = [self.scenario_generator.sample() for _ in range(self.num_scenarios)]
-                all_scenarios = list({tuple(sorted(s.items())): s for s in (scenarios + new_scenarios)}.values())
-
                 # -------------------------------
-                # MEMORY UPDATE (TOP-K + RANDOM)
-                # -------------------------------
-                act_density.reset_history()
+                # # MEMORY UPDATE (TOP-K + RANDOM)
+                # # -------------------------------
+                # act_density.reset_history()
 
-                sorted_idx = np.argsort(fitness)[::-1]
+                # sorted_idx = np.argsort(fitness)[::-1]
 
-                top_k_idx = sorted_idx[:self.top_k]
-                remaining_idx = sorted_idx[self.top_k:]
+                # top_k_idx = sorted_idx[:self.top_k]
+                # remaining_idx = sorted_idx[self.top_k:]
 
-                if len(remaining_idx) > 0:
-                    rand_k_idx = np.random.choice(remaining_idx,
-                                                  size=min(self.random_k, len(remaining_idx)),
-                                                  replace=False)
-                else:
-                    rand_k_idx = []
+                # if len(remaining_idx) > 0:
+                #     rand_k_idx = np.random.choice(remaining_idx,
+                #                                   size=min(self.random_k, len(remaining_idx)),
+                #                                   replace=True)
+                # else:
+                #     rand_k_idx = []
 
-                selected_idx = set(top_k_idx).union(set(rand_k_idx))
+                # selected_idx = set(top_k_idx).union(set(rand_k_idx))
 
-                for _, _, ind_id, _, _, trajectory in results_sp:
+                # for result_sp in results_sp:
+                #     ind_id = result_sp["ind_id"]
 
-                    if ind_id not in selected_idx:
-                        continue
+                #     if ind_id not in selected_idx:
+                #         continue
 
-                    act_density.attribute_id(ind_id)
+                #     trajectory = result_sp["trajectory"]
 
-                    for i, (s, a, r, s_next) in enumerate(trajectory):
+                #     act_density.attribute_id(ind_id)
 
-                        done = (i == len(trajectory) - 1)
+                #     for i, (s, a, r, s_next) in enumerate(trajectory):
 
-                        memory.add(s, np.array([a, a]), r, s_next, done)
+                #         done = (i == len(trajectory) - 1)
 
-                        act_density.add(ind_id, a)
+                #         memory.add(s, np.array([a, a]), r, s_next, done)
 
-                # ----------------------------------------
-                # REFINEMENT (E → E')
-                # ----------------------------------------
-                refine_tasks = []
-                task_id = 0
+                #         act_density.add(ind_id, a)
 
-                for i, params in enumerate(elite):
+                # # ----------------------------------------
+                # # REFINEMENT (E → E')
+                # # ----------------------------------------
+                # refine_tasks = []
+                # task_id = 0
 
-                    original_id = elite_idx[i]
-                    idx_local = act_density.ids_map.get(original_id)
+                # for i, params in enumerate(elite):
 
-                    history_list = list(act_density.history[idx_local]) if idx_local is not None else []
-                    memory_sample = memory.sample(1000)
+                #     original_id = elite_idx[i]
+                #     idx_local = act_density.ids_map.get(original_id)
 
-                    refine_tasks.append((task_id, species.id, original_id, params, all_scenarios, FLAG_REFINE,
-                                         history_list, memory_sample))
+                #     history_list = list(act_density.history[idx_local]) if idx_local is not None else []
+                #     memory_sample = memory.sample(1000)
 
-                    task_id += 1
+                #     refine_tasks.append((task_id, species.id, original_id, params, all_scenarios, FLAG_REFINE,
+                #                          history_list, memory_sample))
 
-                self.worker_manager.submit(refine_tasks)
+                #     task_id += 1
 
-                reward_population = []
-                results_list = []
-                metrics_list = []
+                # self.worker_manager.submit(refine_tasks)
+                # reward_population = []
+                # results_list = []
+                # metrics_list = []
 
-                for result in tqdm(self.worker_manager.collect(len(refine_tasks)),
-                                   total=len(refine_tasks),
-                                   desc=f"Refine Species {species.id}".ljust(35),
-                                   leave=False):
-                    sp_id = result["species_id"]
-                    ind_id = result["ind_id"]
+                # for result in tqdm(self.worker_manager.collect(len(refine_tasks)),
+                #                    total=len(refine_tasks),
+                #                    desc=f"Refine Species {species.id}".ljust(35),
+                #                    leave=True):
+                #     if result["status"] == "timeout_error":
+                #         continue
+                #     else:
+                #         sp_id = result["species_id"]
+                #         ind_id = result["ind_id"]
+                #         post_reward = result["reward"]
+                #         reward_population.append(post_reward)
+                #         metrics_list.append(result["train_metrics"])
+                #         results_list.append({
+                #             "ind_id": ind_id,
+                #             "params": result["refined_params"],
+                #             "fitness": post_reward
+                #         })
 
-                    post_reward = result["mean_reward"]
+                # # ----------------------------------------
+                # # SELECTION (E ∪ E')
+                # # ----------------------------------------
+                # candidates = []
 
-                    reward_population.append(post_reward)
-                    metrics_list.append(result["train_metrics"])
+                # for i, params in enumerate(elite):
+                #     original_id = elite_idx[i]
+                #     candidates.append({"params": params, "fitness": fitness[original_id], "origin": "E"})
 
-                    results_list.append({"ind_id": ind_id, "params": result["refined_params"], "fitness": post_reward})
+                # for res in results_list:
+                #     candidates.append({"params": res["params"], "fitness": res["fitness"], "origin": "E'"})
 
-                # ----------------------------------------
-                # SELECTION (E ∪ E')
-                # ----------------------------------------
-                candidates = []
+                # candidates.sort(key=lambda x: x["fitness"], reverse=True)
+                # new_elite_candidates = candidates[:len(elite)]
 
-                for i, params in enumerate(elite):
-                    original_id = elite_idx[i]
-                    candidates.append({"params": params, "fitness": fitness[original_id], "origin": "E"})
+                # new_pop = species.population.copy()
+                # updated_fitness = fitness.copy()
 
-                for res in results_list:
-                    candidates.append({"params": res["params"], "fitness": res["fitness"], "origin": "E'"})
+                # replaced_elite = 0
 
-                candidates.sort(key=lambda x: x["fitness"], reverse=True)
-                new_elite_candidates = candidates[:len(elite)]
+                # for i, selected in enumerate(new_elite_candidates):
+                #     target_idx = elite_idx[i]
 
-                new_pop = species.population.copy()
-                updated_fitness = fitness.copy()
+                #     new_pop[target_idx] = selected["params"]
+                #     updated_fitness[target_idx] = selected["fitness"]
 
-                replaced_elite = 0
-
-                for i, selected in enumerate(new_elite_candidates):
-                    target_idx = elite_idx[i]
-
-                    new_pop[target_idx] = selected["params"]
-                    updated_fitness[target_idx] = selected["fitness"]
-
-                    if selected["origin"] == "E'":
-                        replaced_elite += 1
+                #     if selected["origin"] == "E'":
+                #         replaced_elite += 1
 
                 # ----------------------------------------
                 # UPDATE OPTIMIZER
                 # ----------------------------------------
-                optimizer.replace_population(new_pop)
-                optimizer.update(updated_fitness)
+                # optimizer.replace_population(new_pop)
+                # optimizer.update(updated_fitness)
+
+                optimizer.update(fitness)
 
                 species.population = optimizer.sample()
 
@@ -437,15 +449,15 @@ class Trainer:
                 # ----------------------------------------
                 # SPECIES METRICS
                 # ----------------------------------------
-                species_metrics[species.id] = {
-                    "fitness_mean": float(np.mean(fitness)),
-                    "fitness_std": float(np.std(fitness)),
-                    "fitness_max": float(np.max(fitness)),
-                    "fitness_min": float(np.min(fitness)),
-                    "guided_replace_ratio": replaced_elite / len(elite),
-                    "guided_mean_reward": float(np.mean(reward_population)),
-                    "guided_std_reward": float(np.std(reward_population))
-                }
+                # species_metrics[species.id] = {
+                #     "fitness_mean": float(np.mean(fitness)),
+                #     "fitness_std": float(np.std(fitness)),
+                #     "fitness_max": float(np.max(fitness)),
+                #     "fitness_min": float(np.min(fitness)),
+                #     "guided_replace_ratio": replaced_elite / len(elite),
+                #     "guided_mean_reward": float(np.mean(reward_population)),
+                #     "guided_std_reward": float(np.std(reward_population))
+                # }
 
             # ----------------------------------------
             # GLOBAL METRICS

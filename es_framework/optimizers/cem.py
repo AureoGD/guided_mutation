@@ -1,5 +1,5 @@
 import numpy as np
-from es_framework.optimizers.base_optimizer import BaseOptimizer
+from guided_mutation.es_framework.optimizers.base_optimizer import BaseOptimizer
 
 
 class CEMOptimizer(BaseOptimizer):
