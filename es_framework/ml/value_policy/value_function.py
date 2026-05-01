@@ -3,10 +3,10 @@ import numpy as np
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 
-from es_framework.ml.value_policy.model import ValueCNN
-from es_framework.ml.value_policy.trainer import ValueTrainer
-from es_framework.ml.value_policy.dataset import ValueDataset
-from es_framework.ml.value_policy.dataset_builder import build_dataset_from_memory
+from guided_mutation.es_framework.ml.value_policy.model import ValueCNN
+from guided_mutation.es_framework.ml.value_policy.trainer import ValueTrainer
+from guided_mutation.es_framework.ml.value_policy.dataset import ValueDataset
+from guided_mutation.es_framework.ml.value_policy.dataset_builder import build_dataset_from_memory
 
 
 class ValueFunction:
