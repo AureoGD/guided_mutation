@@ -28,7 +28,7 @@ def _heartbeat_fn(heartbeat, stop_event, interval=2.0):
         stop_event.wait(interval)
 
 
-def _unpac_info_for_hb(heartbeat, info):
+def _unpack_info_for_hb(heartbeat, info):
     heartbeat[1] = info["sim_step"]
     heartbeat[2] = info["env_id"]
 
@@ -75,6 +75,8 @@ def worker_loop(worker_id, task_queue, result_queue, config, heartbeat, start_ev
         flag = task["flag"]
         extra_in = task["extra"]
 
+        heartbeat[3] = task_id
+
         # --------------------------------------------------------
         # FLAG_SIMULATE
         # --------------------------------------------------------
@@ -102,7 +104,7 @@ def worker_loop(worker_id, task_queue, result_queue, config, heartbeat, start_ev
                     total_reward += reward
 
                     if step % 10 == 0:
-                        _unpac_info_for_hb(heartbeat, info)
+                        _unpack_info_for_hb(heartbeat, info)
 
                     if done:
                         break
@@ -117,8 +119,8 @@ def worker_loop(worker_id, task_queue, result_queue, config, heartbeat, start_ev
             # FLAG_REFINE
             # --------------------------------------------------------
             elif flag == FLAG_REFINE:
+                n_scenarios = len(scenario_data)
                 if gm is None:
-                    n_scenarios = len(scenario_data)
                     local_mem = ReplayBuffer(capacity=config.get("rl_steps", 200))
                     gm = GuidedQV(policy, local_mem, n_scenarios)
 
@@ -150,7 +152,7 @@ def worker_loop(worker_id, task_queue, result_queue, config, heartbeat, start_ev
                         total_reward += reward
 
                         if step % 10 == 0:
-                            _unpac_info_for_hb(heartbeat, info)
+                            _unpack_info_for_hb(heartbeat, info)
 
                         if st_bt_flag:
                             gm.train_step()
@@ -174,6 +176,7 @@ def worker_loop(worker_id, task_queue, result_queue, config, heartbeat, start_ev
                     "train_metrics": gm.train_metrics,
                 }
 
+            heartbeat[3] = -1
             result_queue.put({
                 "type": "simulation_result" if flag == FLAG_SIMULATE else "refined_result",
                 "task_id": task_id,
@@ -186,7 +189,8 @@ def worker_loop(worker_id, task_queue, result_queue, config, heartbeat, start_ev
             })
 
         except Exception as e:
-            print(f"[Worker {worker_id}] Task {task_id} failed: {type(e).__name__}: {e}")
+            # print(f"[Worker {worker_id}] Task {task_id} failed: {type(e).__name__}: {e}")
+            heartbeat[3] = -1
             result_queue.put({
                 "type": "simulation_result" if flag == FLAG_SIMULATE else "refined_result",
                 "task_id": task_id,
