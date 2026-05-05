@@ -45,7 +45,6 @@ def worker_loop(worker_id, task_queue, result_queue, config, heartbeat, start_ev
     # reset env for test
     try:
         _, info = env.reset()
-        print(f"Env {worker_id} successfully created")
     except Exception as e:
         print(f"[Worker {worker_id}] Failed to create env: {type(e).__name__}: {e}")
 
@@ -100,7 +99,7 @@ def worker_loop(worker_id, task_queue, result_queue, config, heartbeat, start_ev
                 for step in range(max_sim_step):
                     action, _ = policy.predict(state)
                     reward, next_state, done, info = _step_env(env, action)
-                    trajectory.append((state, action, reward, next_state))
+                    trajectory.append((state, action, reward, next_state, done))
                     total_reward += reward
 
                     if step % 10 == 0:
@@ -121,14 +120,15 @@ def worker_loop(worker_id, task_queue, result_queue, config, heartbeat, start_ev
             elif flag == FLAG_REFINE:
                 n_scenarios = len(scenario_data)
                 if gm is None:
-                    local_mem = ReplayBuffer(capacity=config.get("rl_steps", 200))
-                    gm = GuidedQV(policy, local_mem, n_scenarios)
+                    gm = GuidedQV(n_scenarios=n_scenarios, config=config)
 
                 elite_mem = extra_in["memory"]
                 elite_act_density = extra_in["act_density"]
                 st_bt_flag = extra_in["st_bt"]
 
-                gm.add_batch(elite_mem)
+                if len(elite_mem) > 0:
+                    batch = elite_mem.sample(len(elite_mem))
+                    gm.add_batch(gm.elite_mem, batch)
                 gm.set_initial_history(elite_act_density)
                 gm.sync_with_elite(params)
 
@@ -147,7 +147,7 @@ def worker_loop(worker_id, task_queue, result_queue, config, heartbeat, start_ev
 
                         reward, next_state, done, info = _step_env(env, action[0])
                         mem = [state, action, reward, next_state, done]
-                        gm.add_transition(mem)
+                        gm.add_transition(gm.local_mem, mem)
 
                         total_reward += reward
 
@@ -172,7 +172,7 @@ def worker_loop(worker_id, task_queue, result_queue, config, heartbeat, start_ev
                 total_reward = total_reward / n_scenarios
 
                 extra_out = {
-                    "refined_params": gm.get_parameters(),
+                    "refined_params": gm.get_parameters(gm.q_online),
                     "train_metrics": gm.train_metrics,
                 }
 
@@ -189,7 +189,7 @@ def worker_loop(worker_id, task_queue, result_queue, config, heartbeat, start_ev
             })
 
         except Exception as e:
-            # print(f"[Worker {worker_id}] Task {task_id} failed: {type(e).__name__}: {e}")
+            print(f"[Worker {worker_id}] Task {task_id} failed: {type(e).__name__}: {e}")
             heartbeat[3] = -1
             result_queue.put({
                 "type": "simulation_result" if flag == FLAG_SIMULATE else "refined_result",
